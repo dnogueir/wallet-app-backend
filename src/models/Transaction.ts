@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 
 import Category from './Category';
+import ColumnNumericTransformer from '../utils/ColumnNumericTransformer';
 
 @Entity('transactions')
 class Transaction {
@@ -21,7 +22,11 @@ class Transaction {
   @Column()
   type: 'income' | 'outcome';
 
-  @Column()
+  @Column('numeric', {
+    precision: 7,
+    scale: 2,
+    transformer: new ColumnNumericTransformer(),
+  })
   value: number;
 
   @ManyToOne(() => Category)
