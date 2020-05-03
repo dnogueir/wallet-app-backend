@@ -1,115 +1,89 @@
 import path from 'path';
+import csvParse from 'csv-parse';
 import fs from 'fs';
-import { getRepository } from 'typeorm';
+import { getRepository, In } from 'typeorm';
 import Transaction from '../models/Transaction';
-import LoadCsv from '../utils/CsvImportUitl';
-import HandleCategoryService from './HandleCategoryService';
-import CreateTransactionService from './CreateTransactionService';
 import Category from '../models/Category';
+
+interface CSVTransaction {
+  title: string;
+  type: 'income' | 'outcome';
+  value: number;
+  category: string;
+}
 
 class ImportTransactionsService {
   async execute(data: string): Promise<Transaction[]> {
     const csvFilePath = path.resolve(__dirname, '..', '..', 'tmp', `${data}`);
-    const csvImport = new LoadCsv();
-    const transactions = await csvImport.execute(csvFilePath);
-    const insertedTransactions: Transaction[] = [];
-    const transactionsToBeInserted: Transaction[] = [];
-    const insertedCategories: string[] = [];
-    const existingCategoriesTitle: string[] = [];
-    const categoryArray: Category[] = [];
     const categoryRepository = getRepository(Category);
     const transactionRepository = getRepository(Transaction);
 
-    // getting categories
-    transactions.forEach(trans => {
-      insertedCategories.push(trans[3]);
+    const readCSVStream = fs.createReadStream(csvFilePath);
+
+    const parseStream = csvParse({
+      from_line: 2,
     });
 
-    const nonRepeatedCategories = insertedCategories.filter(function (
-      elem,
-      index,
-      self,
-    ) {
-      return index === self.indexOf(elem);
+    const parseCSV = readCSVStream.pipe(parseStream);
+
+    const transactions: CSVTransaction[] = [];
+    const categories: string[] = [];
+
+    parseCSV.on('data', async line => {
+      const [title, type, value, category] = line.map((cell: string) =>
+        cell.trim(),
+      );
+
+      transactions.push({ title, type, value, category });
+      categories.push(category);
     });
 
-    const existingCategories = await categoryRepository
-      .createQueryBuilder('category')
-      .where('category.title IN (:...titles)', {
-        titles: nonRepeatedCategories,
-      })
-      .getMany();
-
-    if (
-      existingCategories &&
-      existingCategories.length < nonRepeatedCategories.length
-    ) {
-      existingCategories.forEach(item => {
-        existingCategoriesTitle.push(item.title);
-      });
-
-      const categoriesToBeInserted = nonRepeatedCategories.filter(category => {
-        return !existingCategoriesTitle.includes(category);
-      });
-
-      categoriesToBeInserted.forEach(category => {
-        const cat = new Category();
-        cat.title = category;
-        categoryArray.push(cat);
-      });
-
-      await categoryRepository
-        .createQueryBuilder()
-        .insert()
-        .into(Category)
-        .values(categoryArray)
-        .execute();
-    }
-
-    // getting categories ids
-    const categories = await categoryRepository
-      .createQueryBuilder('category')
-      .where('category.title IN (:...titles)', {
-        titles: nonRepeatedCategories,
-      })
-      .getMany();
-
-    transactions.forEach(item => {
-      const transaction = new Transaction();
-      transaction.title = item[0];
-      transaction.value = item[2];
-      transaction.type = item[1];
-      transaction.category = categories.find(
-        element => element.title === item[3],
-      )?.id;
-      transactionsToBeInserted.push(transaction);
+    await new Promise(resolve => {
+      parseCSV.on('end', resolve);
     });
 
-    console.log(transactionsToBeInserted);
-
-    const trans = await transactionRepository
-      .createQueryBuilder()
-      .insert()
-      .into(Transaction)
-      .values(transactionsToBeInserted)
-      .execute();
-
-    console.log(trans.identifiers);
-    const transIds: string[] = [];
-    trans.identifiers.forEach(item => {
-      transIds.push(item.id);
+    const existentCategories = await categoryRepository.find({
+      where: {
+        title: In(categories),
+      },
     });
 
-    const trans2 = await transactionRepository
-      .createQueryBuilder('transaction')
-      .where('transaction.id IN (:...ids)', {
-        ids: transIds,
-      })
-      .getMany();
+    const existentCategoriesTitles = existentCategories.map(
+      (category: Category) => category.title,
+    );
+
+    const categoriesToBeAdded = categories
+      .filter(category => !existentCategoriesTitles.includes(category))
+      .filter((value, index, self) => self.indexOf(value) === index);
+
+    const newCategories = await categoryRepository.create(
+      categoriesToBeAdded.map(title => ({
+        title,
+      })),
+    );
+
+    await categoryRepository.save(newCategories);
+
+    const finalCategories = [...newCategories, ...existentCategories];
+    console.log(transactions);
+    console.log(finalCategories);
+
+    const createdTransctions = transactionRepository.create(
+      transactions.map(item => ({
+        title: item.title,
+        type: item.type,
+        value: item.value,
+        category: finalCategories.find(
+          category => category.title === item.category,
+        ),
+      })),
+    );
+
+    await transactionRepository.save(createdTransctions);
 
     fs.unlinkSync(csvFilePath);
 
-    return trans2;
+    return createdTransctions;
   }
 }
 
