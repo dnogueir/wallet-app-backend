@@ -12,6 +12,13 @@ interface CSVTransaction {
   category: string;
 }
 
+interface RealTransaction {
+  title: string;
+  type: 'income' | 'outcome';
+  value: number;
+  category_id: string;
+}
+
 class ImportTransactionsService {
   async execute(data: string): Promise<Transaction[]> {
     const csvFilePath = path.resolve(__dirname, '..', '..', 'tmp', `${data}`);
@@ -68,14 +75,29 @@ class ImportTransactionsService {
     console.log(transactions);
     console.log(finalCategories);
 
+    const finalTransactions: RealTransaction[] = [];
+    transactions.forEach(transaction => {
+      const categoryId = finalCategories.find(
+        category => category.title === transaction.category,
+      );
+      let finalCategoryId = '';
+      if (categoryId) {
+        finalCategoryId = categoryId.id;
+      }
+      finalTransactions.push({
+        title: transaction.title,
+        type: transaction.type,
+        value: transaction.value,
+        category_id: finalCategoryId,
+      });
+    });
+
     const createdTransctions = transactionRepository.create(
-      transactions.map(item => ({
+      finalTransactions.map(item => ({
         title: item.title,
         type: item.type,
         value: item.value,
-        category: finalCategories.find(
-          category => category.title === item.category,
-        ),
+        category_id: item.category_id,
       })),
     );
 
